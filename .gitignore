@@ -1,2 +1,3 @@
 venv/
 dataset.jsonl
+__pycache__/
