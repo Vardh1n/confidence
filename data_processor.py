@@ -1,34 +1,76 @@
 import pandas as pd
 import re
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set, Iterator
 from data_store import QADataStore
 from classifier import ModernTextClassifier
 
 class NaturalQuestionsProcessor:
-    def __init__(self, db_path: str = "qa_database.db"):
+    def __init__(self, db_path: str = "qa_database.db", chunk_size: int = 1000):
         """
         Initialize the processor with database and classifier.
         
         Args:
             db_path: Path to the SQLite database
+            chunk_size: Number of entries to process in each chunk
         """
         self.db = QADataStore(db_path)
         self.classifier = ModernTextClassifier(similarity_threshold=0.6)
+        self.chunk_size = chunk_size
+        self._processed_questions = None  # Cache for processed questions
+        self._processed_ids = None  # Cache for processed IDs
         
+    def _get_processed_questions(self) -> Set[str]:
+        """Get set of already processed questions for duplicate checking."""
+        if self._processed_questions is None:
+            print("Loading existing questions from database for duplicate checking...")
+            existing_entries = self.db.get_all_entries()
+            self._processed_questions = {entry['question'] for entry in existing_entries}
+            print(f"Found {len(self._processed_questions)} existing questions in database")
+        return self._processed_questions
+    
+    def _get_processed_ids(self) -> Set[str]:
+        """Get set of already processed entry IDs for duplicate checking."""
+        if self._processed_ids is None:
+            print("Loading existing entry IDs from database for duplicate checking...")
+            existing_entries = self.db.get_all_entries()
+            self._processed_ids = {str(entry['id']) for entry in existing_entries}
+            print(f"Found {len(self._processed_ids)} existing entry IDs in database")
+        return self._processed_ids
+    
+    def _is_duplicate_question(self, question: str) -> bool:
+        """Check if question has already been processed."""
+        processed_questions = self._get_processed_questions()
+        return question in processed_questions
+    
+    def _is_duplicate_id(self, entry_id: str) -> bool:
+        """Check if entry ID has already been processed."""
+        processed_ids = self._get_processed_ids()
+        return str(entry_id) in processed_ids
+    
+    def _add_to_processed_cache(self, question: str, entry_id: str):
+        """Add question and ID to processed cache."""
+        if self._processed_questions is not None:
+            self._processed_questions.add(question)
+        if self._processed_ids is not None:
+            self._processed_ids.add(str(entry_id))
+    
     def clean_text(self, text: str) -> str:
-        """Clean and normalize text by removing HTML tags and extra whitespace."""
+        """Clean and normalize text by removing HTML tags, underscores, hyphens, and extra whitespace."""
         if not text or pd.isna(text):
             return ""
         
         # Remove HTML tags
         text = re.sub(r'<[^>]+>', ' ', str(text))
         
+        # Remove underscores and hyphens
+        text = re.sub(r'[_\-]', ' ', text)
+        
         # Replace multiple whitespaces with single space
         text = re.sub(r'\s+', ' ', text)
         
-        # Remove extra punctuation and normalize
-        text = re.sub(r'[^\w\s\?\.\!\,\:\;\-]', '', text)
+        # Remove extra punctuation and normalize (keeping basic punctuation)
+        text = re.sub(r'[^\w\s\?\.\!\,\:\;]', '', text)
         
         return text.strip()
     
@@ -136,7 +178,7 @@ class NaturalQuestionsProcessor:
     
     def load_jsonl(self, file_path: str, limit: Optional[int] = None) -> List[Dict]:
         """
-        Load JSONL file and return list of entries.
+        Load JSONL file and return list of entries (for small datasets or testing).
         
         Args:
             file_path: Path to the JSONL file
@@ -162,8 +204,8 @@ class NaturalQuestionsProcessor:
                             print(f"Error parsing line {idx + 1}: {e}")
                             continue
                             
-                if idx % 1000 == 0 and idx > 0:
-                    print(f"Loaded {idx + 1} entries...")
+                    if idx % 1000 == 0 and idx > 0:
+                        print(f"Loaded {idx + 1} entries...")
                     
         except FileNotFoundError:
             print(f"File not found: {file_path}")
@@ -174,26 +216,99 @@ class NaturalQuestionsProcessor:
         
         print(f"Successfully loaded {len(entries)} entries from JSONL file")
         return entries
+
+    def load_jsonl_chunks(self, file_path: str, chunk_size: Optional[int] = None) -> Iterator[List[Dict]]:
+        """
+        Load JSONL file in chunks to handle large datasets efficiently.
+        
+        Args:
+            file_path: Path to the JSONL file
+            chunk_size: Number of entries per chunk (uses instance default if None)
+            
+        Yields:
+            Lists of JSON entries (chunks)
+        """
+        if chunk_size is None:
+            chunk_size = self.chunk_size
+            
+        chunk = []
+        total_loaded = 0
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as file:
+                for idx, line in enumerate(file):
+                    line = line.strip()
+                    if line:
+                        try:
+                            entry = json.loads(line)
+                            chunk.append(entry)
+                            total_loaded += 1
+                            
+                            # Yield chunk when it reaches the desired size
+                            if len(chunk) >= chunk_size:
+                                yield chunk
+                                chunk = []
+                                
+                        except json.JSONDecodeError as e:
+                            print(f"Error parsing line {idx + 1}: {e}")
+                            continue
+                            
+                    if total_loaded % 10000 == 0 and total_loaded > 0:
+                        print(f"Loaded {total_loaded} entries...")
+                
+                # Yield remaining entries in the last chunk
+                if chunk:
+                    yield chunk
+                    
+        except FileNotFoundError:
+            print(f"File not found: {file_path}")
+            return
+        except Exception as e:
+            print(f"Error loading JSONL file: {e}")
+            return
+        
+        print(f"Successfully processed {total_loaded} entries from JSONL file")
     
-    def process_entries(self, entries: List[Dict]) -> List[Dict]:
+    def process_entries(self, entries: List[Dict], skip_duplicates: bool = True) -> List[Dict]:
         """
         Process the JSONL entries and return processed entries.
         
         Args:
             entries: List of JSONL entries
+            skip_duplicates: Whether to skip entries that are already processed
             
         Returns:
             List of processed entries
         """
         processed_entries = []
+        skipped_count = 0
         
         print(f"Processing {len(entries)} entries...")
+        if skip_duplicates:
+            print("Duplicate checking enabled - will skip already processed entries")
         
         for idx, entry in enumerate(entries):
             try:
+                # Use example_id as our ID
+                entry_id = entry.get('example_id', idx)
+                
+                # Check for duplicate ID first (fastest check)
+                if skip_duplicates and self._is_duplicate_id(entry_id):
+                    skipped_count += 1
+                    if skipped_count % 100 == 0:
+                        print(f"Skipped {skipped_count} duplicate entries (by ID)...")
+                    continue
+                
                 # Extract and clean question
                 question = self.parse_question(entry.get('question_text', ''))
                 if not question:
+                    continue
+                
+                # Check for duplicate question (after cleaning)
+                if skip_duplicates and self._is_duplicate_question(question):
+                    skipped_count += 1
+                    if skipped_count % 100 == 0:
+                        print(f"Skipped {skipped_count} duplicate entries (by question)...")
                     continue
                 
                 # Consolidate answers
@@ -203,9 +318,6 @@ class NaturalQuestionsProcessor:
                 
                 # Classify the question to get category
                 category = self.classifier.classify_sentence(question)
-                
-                # Use example_id as our ID
-                entry_id = entry.get('example_id', idx)
                 
                 # Create processed entry
                 processed_entry = {
@@ -217,14 +329,85 @@ class NaturalQuestionsProcessor:
                 
                 processed_entries.append(processed_entry)
                 
-                if (idx + 1) % 100 == 0:
-                    print(f"Processed {idx + 1} entries...")
+                # Add to processed cache
+                if skip_duplicates:
+                    self._add_to_processed_cache(question, entry_id)
+                
+                if (len(processed_entries)) % 100 == 0:
+                    print(f"Processed {len(processed_entries)} new entries (skipped {skipped_count} duplicates)...")
                     
             except Exception as e:
                 print(f"Error processing entry {idx}: {e}")
                 continue
         
+        if skip_duplicates and skipped_count > 0:
+            print(f"Processing complete: {len(processed_entries)} new entries processed, {skipped_count} duplicates skipped")
+        else:
+            print(f"Processing complete: {len(processed_entries)} entries processed")
+        
         return processed_entries
+
+    def process_chunk(self, entries: List[Dict], skip_duplicates: bool = True) -> Tuple[List[Dict], int]:
+        """
+        Process a chunk of entries and return processed entries and skip count.
+        
+        Args:
+            entries: List of JSONL entries to process
+            skip_duplicates: Whether to skip already processed entries
+            
+        Returns:
+            Tuple of (processed_entries, skipped_count)
+        """
+        processed_entries = []
+        skipped_count = 0
+        
+        for idx, entry in enumerate(entries):
+            try:
+                # Use example_id as our ID
+                entry_id = entry.get('example_id', f"chunk_{idx}")
+                
+                # Check for duplicate ID first (fastest check)
+                if skip_duplicates and self._is_duplicate_id(entry_id):
+                    skipped_count += 1
+                    continue
+                
+                # Extract and clean question
+                question = self.parse_question(entry.get('question_text', ''))
+                if not question:
+                    continue
+                
+                # Check for duplicate question (after cleaning)
+                if skip_duplicates and self._is_duplicate_question(question):
+                    skipped_count += 1
+                    continue
+                
+                # Consolidate answers
+                answer = self.consolidate_answers(entry)
+                if not answer:
+                    continue
+                
+                # Classify the question to get category
+                category = self.classifier.classify_sentence(question)
+                
+                # Create processed entry
+                processed_entry = {
+                    'id': entry_id,
+                    'question': question,
+                    'answer': answer,
+                    'category': category
+                }
+                
+                processed_entries.append(processed_entry)
+                
+                # Add to processed cache
+                if skip_duplicates:
+                    self._add_to_processed_cache(question, entry_id)
+                    
+            except Exception as e:
+                print(f"Error processing entry {idx}: {e}")
+                continue
+        
+        return processed_entries, skipped_count
     
     def save_to_database(self, processed_entries: List[Dict]) -> int:
         """
@@ -257,21 +440,114 @@ class NaturalQuestionsProcessor:
                 continue
         
         return saved_count
+
+    def save_chunk_to_database(self, processed_entries: List[Dict]) -> int:
+        """
+        Save a chunk of processed entries to the database.
+        
+        Args:
+            processed_entries: List of processed entry dictionaries
+            
+        Returns:
+            Number of entries successfully saved
+        """
+        saved_count = 0
+        
+        for entry in processed_entries:
+            try:
+                self.db.add_entry(
+                    question=entry['question'],
+                    answer=entry['answer'],
+                    category=entry['category']
+                )
+                saved_count += 1
+                    
+            except Exception as e:
+                print(f"Error saving entry: {e}")
+                continue
+        
+        return saved_count
     
-    def process_and_save(self, entries: List[Dict]) -> Tuple[int, int]:
+    def process_and_save(self, entries: List[Dict], skip_duplicates: bool = True) -> Tuple[int, int, int]:
         """
         Process entries and save to database in one step.
         
         Args:
             entries: List of JSONL entries
+            skip_duplicates: Whether to skip entries that are already processed
             
         Returns:
-            Tuple of (processed_count, saved_count)
+            Tuple of (processed_count, saved_count, skipped_count)
         """
-        processed_entries = self.process_entries(entries)
+        # Get initial counts for calculating skipped
+        initial_db_count = len(self.db.get_all_entries())
+        
+        processed_entries = self.process_entries(entries, skip_duplicates)
         saved_count = self.save_to_database(processed_entries)
         
-        return len(processed_entries), saved_count
+        # Calculate how many were skipped
+        skipped_count = len(entries) - len(processed_entries)
+        
+        return len(processed_entries), saved_count, skipped_count
+
+    def process_large_dataset(self, file_path: str, skip_duplicates: bool = True, 
+                            limit: Optional[int] = None) -> Tuple[int, int, int]:
+        """
+        Process large datasets efficiently by streaming and chunking.
+        
+        Args:
+            file_path: Path to the JSONL file
+            skip_duplicates: Whether to skip already processed entries
+            limit: Optional limit on total entries to process
+            
+        Returns:
+            Tuple of (total_processed, total_saved, total_skipped)
+        """
+        total_processed = 0
+        total_saved = 0
+        total_skipped = 0
+        entries_processed_count = 0
+        
+        print(f"Processing large dataset in chunks of {self.chunk_size}...")
+        if skip_duplicates:
+            print("Duplicate checking enabled")
+        
+        try:
+            for chunk_idx, chunk in enumerate(self.load_jsonl_chunks(file_path)):
+                if limit and entries_processed_count >= limit:
+                    break
+                
+                # Limit chunk size if we're near the limit
+                if limit:
+                    remaining = limit - entries_processed_count
+                    if len(chunk) > remaining:
+                        chunk = chunk[:remaining]
+                
+                print(f"\nProcessing chunk {chunk_idx + 1} ({len(chunk)} entries)...")
+                
+                # Process chunk
+                processed_entries, skipped_count = self.process_chunk(chunk, skip_duplicates)
+                
+                # Save chunk to database
+                saved_count = self.save_chunk_to_database(processed_entries)
+                
+                # Update totals
+                total_processed += len(processed_entries)
+                total_saved += saved_count
+                total_skipped += skipped_count
+                entries_processed_count += len(chunk)
+                
+                print(f"Chunk {chunk_idx + 1} complete: {len(processed_entries)} processed, "
+                      f"{saved_count} saved, {skipped_count} skipped")
+                print(f"Total so far: {total_processed} processed, {total_saved} saved, {total_skipped} skipped")
+                print("-" * 50)
+                
+        except KeyboardInterrupt:
+            print(f"\nProcessing interrupted by user")
+        except Exception as e:
+            print(f"Error during processing: {e}")
+        
+        return total_processed, total_saved, total_skipped
     
     def get_processing_stats(self) -> Dict:
         """Get statistics about the processed data."""
@@ -281,19 +557,60 @@ class NaturalQuestionsProcessor:
             'category_stats': self.db.get_category_stats()
         }
         return stats
+    
+    def reset_processed_cache(self):
+        """Reset the processed questions/IDs cache to force reload from database."""
+        self._processed_questions = None
+        self._processed_ids = None
+    
+    def get_resume_info(self) -> Dict:
+        """Get information about current processing state for resuming."""
+        existing_entries = self.db.get_all_entries()
+        if not existing_entries:
+            return {
+                'total_processed': 0,
+                'last_processed_id': None,
+                'can_resume': False
+            }
+        
+        # Find the highest processed ID (assuming IDs are sequential)
+        processed_ids = [entry['id'] for entry in existing_entries if entry['id'] is not None]
+        if processed_ids:
+            try:
+                numeric_ids = [int(id) for id in processed_ids if str(id).isdigit()]
+                last_id = max(numeric_ids) if numeric_ids else None
+            except:
+                last_id = None
+        else:
+            last_id = None
+        
+        return {
+            'total_processed': len(existing_entries),
+            'last_processed_id': last_id,
+            'can_resume': True
+        }
 
-def load_and_process_dataset(file_path: str, limit: Optional[int] = None):
+def load_and_process_dataset(file_path: str, limit: Optional[int] = None, skip_duplicates: bool = True):
     """
-    Main function to load and process the Natural Questions JSONL dataset.
+    Main function to load and process the Natural Questions JSONL dataset with resume capability.
+    For small datasets or testing purposes.
     
     Args:
         file_path: Path to the JSONL file
         limit: Optional limit on number of entries to process
+        skip_duplicates: Whether to skip already processed entries (enables resume)
     """
     print("Loading JSONL dataset...")
     
     # Initialize processor
     processor = NaturalQuestionsProcessor()
+    
+    # Show resume information
+    if skip_duplicates:
+        resume_info = processor.get_resume_info()
+        print(f"Resume info: {resume_info['total_processed']} entries already processed")
+        if resume_info['last_processed_id']:
+            print(f"Last processed ID: {resume_info['last_processed_id']}")
     
     # Load JSONL entries
     entries = processor.load_jsonl(file_path, limit)
@@ -303,16 +620,66 @@ def load_and_process_dataset(file_path: str, limit: Optional[int] = None):
         return
     
     # Process and save
-    print("\nStarting processing...")
-    processed_count, saved_count = processor.process_and_save(entries)
+    print(f"\nStarting processing (skip_duplicates={skip_duplicates})...")
+    processed_count, saved_count, skipped_count = processor.process_and_save(entries, skip_duplicates)
     
     # Print statistics
     print(f"\nProcessing completed!")
-    print(f"Processed: {processed_count} entries")
-    print(f"Saved: {saved_count} entries")
+    print(f"Total entries in file: {len(entries)}")
+    print(f"New entries processed: {processed_count}")
+    print(f"Entries saved: {saved_count}")
+    if skip_duplicates:
+        print(f"Duplicate entries skipped: {skipped_count}")
     
     stats = processor.get_processing_stats()
     print(f"\nDatabase Statistics:")
+    print(f"Total entries in DB: {stats['total_entries']}")
+    print(f"Categories found: {len(stats['categories'])}")
+    print(f"Top categories:")
+    for category, count in stats['category_stats'][:10]:
+        print(f"  {category}: {count} entries")
+
+def load_and_process_large_dataset(file_path: str, chunk_size: int = 2000, 
+                                 limit: Optional[int] = None, skip_duplicates: bool = True):
+    """
+    Main function to efficiently process large JSONL datasets (like 15GB files).
+    
+    Args:
+        file_path: Path to the JSONL file
+        chunk_size: Number of entries to process in each chunk
+        limit: Optional limit on total entries to process
+        skip_duplicates: Whether to skip already processed entries
+    """
+    print(f"Processing large dataset: {file_path}")
+    print(f"Chunk size: {chunk_size}")
+    
+    # Initialize processor with chunk size
+    processor = NaturalQuestionsProcessor(chunk_size=chunk_size)
+    
+    # Show resume information
+    if skip_duplicates:
+        resume_info = processor.get_resume_info()
+        print(f"Resume info: {resume_info['total_processed']} entries already processed")
+        if resume_info['last_processed_id']:
+            print(f"Last processed ID: {resume_info['last_processed_id']}")
+    
+    # Process the dataset
+    processed_count, saved_count, skipped_count = processor.process_large_dataset(
+        file_path, skip_duplicates, limit
+    )
+    
+    # Print final statistics
+    print(f"\n{'='*60}")
+    print(f"PROCESSING COMPLETED!")
+    print(f"{'='*60}")
+    print(f"Total entries processed: {processed_count}")
+    print(f"Total entries saved: {saved_count}")
+    if skip_duplicates:
+        print(f"Total duplicates skipped: {skipped_count}")
+    
+    # Show database statistics
+    stats = processor.get_processing_stats()
+    print(f"\nFinal Database Statistics:")
     print(f"Total entries in DB: {stats['total_entries']}")
     print(f"Categories found: {len(stats['categories'])}")
     print(f"Top categories:")
@@ -346,17 +713,37 @@ def process_sample_entry(file_path: str):
 
 # Example usage
 if __name__ == "__main__":
-    # Process a sample of the dataset
-    file_path = "dataset.jsonl"  # Replace with your actual file path
+    # For testing with small datasets
+    #file_path = "dataset.jsonl"  # Replace with your actual file path
     
     # First, test with a single entry
+    large_file_path = "dataset.jsonl"  # Your 15GB file
     print("Testing with sample entry:")
-    process_sample_entry(file_path)
+    process_sample_entry(large_file_path)
     
     print("\n" + "="*50 + "\n")
     
-    # Process only first 500 entries for testing
-    load_and_process_dataset(file_path, limit=500)
+    # For small datasets or testing (loads everything into memory)
+    #print("Processing small dataset:")
+    #load_and_process_dataset(file_path, limit=500, skip_duplicates=True)
     
-    # To process the entire dataset, use:
-    # load_and_process_dataset(file_path)
+    print("\n" + "="*50 + "\n")
+    
+    # For large datasets like 15GB files (memory-efficient chunked processing)
+    print("Processing large dataset with chunked approach:")
+    
+    # Adjust chunk_size based on your available RAM:
+    # - 1000 entries ≈ 50-100MB RAM
+    # - 2000 entries ≈ 100-200MB RAM  
+    # - 5000 entries ≈ 250-500MB RAM
+    load_and_process_large_dataset(
+        file_path=large_file_path,
+        chunk_size=10000,  # Adjust based on your system's RAM
+        skip_duplicates=True  # Enable resume capability
+    )
+    
+    # To process the entire 15GB dataset:
+    # load_and_process_large_dataset(large_file_path, chunk_size=2000, skip_duplicates=True)
+    
+    # To test with a limited number of entries:
+    # load_and_process_large_dataset(large_file_path, chunk_size=2000, limit=10000, skip_duplicates=True)
