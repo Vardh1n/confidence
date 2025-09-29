@@ -4,19 +4,22 @@ import json
 from typing import Dict, List, Optional, Tuple, Set, Iterator
 from data_store import QADataStore
 from classifier import ModernTextClassifier
+from tqdm import tqdm  # Add this import for progress bar
 
 class NaturalQuestionsProcessor:
-    def __init__(self, db_path: str = "qa_database.db", chunk_size: int = 1000):
+    def __init__(self, db_path: str = "qa_database.db", chunk_size: int = 1000, save_frequency: int = 100):
         """
         Initialize the processor with database and classifier.
         
         Args:
             db_path: Path to the SQLite database
             chunk_size: Number of entries to process in each chunk
+            save_frequency: Save to database every N entries
         """
         self.db = QADataStore(db_path)
         self.classifier = ModernTextClassifier(similarity_threshold=0.6)
         self.chunk_size = chunk_size
+        self.save_frequency = save_frequency
         self._processed_questions = None  # Cache for processed questions
         self._processed_ids = None  # Cache for processed IDs
         
@@ -282,10 +285,14 @@ class NaturalQuestionsProcessor:
         """
         processed_entries = []
         skipped_count = 0
+        saved_count = 0
         
         print(f"Processing {len(entries)} entries...")
         if skip_duplicates:
             print("Duplicate checking enabled - will skip already processed entries")
+        
+        # Create progress bar
+        progress_bar = tqdm(total=len(entries), desc="Processing entries", unit="entry")
         
         for idx, entry in enumerate(entries):
             try:
@@ -295,25 +302,35 @@ class NaturalQuestionsProcessor:
                 # Check for duplicate ID first (fastest check)
                 if skip_duplicates and self._is_duplicate_id(entry_id):
                     skipped_count += 1
-                    if skipped_count % 100 == 0:
-                        print(f"Skipped {skipped_count} duplicate entries (by ID)...")
+                    progress_bar.update(1)
+                    progress_bar.set_postfix({
+                        'processed': len(processed_entries),
+                        'saved': saved_count,
+                        'skipped': skipped_count
+                    })
                     continue
                 
                 # Extract and clean question
                 question = self.parse_question(entry.get('question_text', ''))
                 if not question:
+                    progress_bar.update(1)
                     continue
                 
                 # Check for duplicate question (after cleaning)
                 if skip_duplicates and self._is_duplicate_question(question):
                     skipped_count += 1
-                    if skipped_count % 100 == 0:
-                        print(f"Skipped {skipped_count} duplicate entries (by question)...")
+                    progress_bar.update(1)
+                    progress_bar.set_postfix({
+                        'processed': len(processed_entries),
+                        'saved': saved_count,
+                        'skipped': skipped_count
+                    })
                     continue
                 
                 # Consolidate answers
                 answer = self.consolidate_answers(entry)
                 if not answer:
+                    progress_bar.update(1)
                     continue
                 
                 # Classify the question to get category
@@ -333,33 +350,56 @@ class NaturalQuestionsProcessor:
                 if skip_duplicates:
                     self._add_to_processed_cache(question, entry_id)
                 
-                if (len(processed_entries)) % 100 == 0:
-                    print(f"Processed {len(processed_entries)} new entries (skipped {skipped_count} duplicates)...")
+                # Save to database every save_frequency entries
+                if len(processed_entries) % self.save_frequency == 0:
+                    batch_saved = self.save_batch_to_database(processed_entries[-self.save_frequency:])
+                    saved_count += batch_saved
+                    
+                # Update progress bar
+                progress_bar.update(1)
+                progress_bar.set_postfix({
+                    'processed': len(processed_entries),
+                    'saved': saved_count,
+                    'skipped': skipped_count
+                })
                     
             except Exception as e:
                 print(f"Error processing entry {idx}: {e}")
+                progress_bar.update(1)
                 continue
         
+        # Save any remaining entries
+        remaining_entries = len(processed_entries) % self.save_frequency
+        if remaining_entries > 0:
+            batch_saved = self.save_batch_to_database(processed_entries[-remaining_entries:])
+            saved_count += batch_saved
+        
+        progress_bar.close()
+        
         if skip_duplicates and skipped_count > 0:
-            print(f"Processing complete: {len(processed_entries)} new entries processed, {skipped_count} duplicates skipped")
+            print(f"Processing complete: {len(processed_entries)} new entries processed, {saved_count} saved to DB, {skipped_count} duplicates skipped")
         else:
-            print(f"Processing complete: {len(processed_entries)} entries processed")
+            print(f"Processing complete: {len(processed_entries)} entries processed, {saved_count} saved to DB")
         
         return processed_entries
 
-    def process_chunk(self, entries: List[Dict], skip_duplicates: bool = True) -> Tuple[List[Dict], int]:
+    def process_chunk(self, entries: List[Dict], skip_duplicates: bool = True) -> Tuple[List[Dict], int, int]:
         """
-        Process a chunk of entries and return processed entries and skip count.
+        Process a chunk of entries and return processed entries, skip count, and saved count.
         
         Args:
             entries: List of JSONL entries to process
             skip_duplicates: Whether to skip already processed entries
             
         Returns:
-            Tuple of (processed_entries, skipped_count)
+            Tuple of (processed_entries, skipped_count, saved_count)
         """
         processed_entries = []
         skipped_count = 0
+        saved_count = 0
+        
+        # Create progress bar for this chunk
+        progress_bar = tqdm(total=len(entries), desc="Processing chunk", unit="entry", leave=False)
         
         for idx, entry in enumerate(entries):
             try:
@@ -369,21 +409,35 @@ class NaturalQuestionsProcessor:
                 # Check for duplicate ID first (fastest check)
                 if skip_duplicates and self._is_duplicate_id(entry_id):
                     skipped_count += 1
+                    progress_bar.update(1)
+                    progress_bar.set_postfix({
+                        'processed': len(processed_entries),
+                        'saved': saved_count,
+                        'skipped': skipped_count
+                    })
                     continue
                 
                 # Extract and clean question
                 question = self.parse_question(entry.get('question_text', ''))
                 if not question:
+                    progress_bar.update(1)
                     continue
                 
                 # Check for duplicate question (after cleaning)
                 if skip_duplicates and self._is_duplicate_question(question):
                     skipped_count += 1
+                    progress_bar.update(1)
+                    progress_bar.set_postfix({
+                        'processed': len(processed_entries),
+                        'saved': saved_count,
+                        'skipped': skipped_count
+                    })
                     continue
                 
                 # Consolidate answers
                 answer = self.consolidate_answers(entry)
                 if not answer:
+                    progress_bar.update(1)
                     continue
                 
                 # Classify the question to get category
@@ -402,12 +456,61 @@ class NaturalQuestionsProcessor:
                 # Add to processed cache
                 if skip_duplicates:
                     self._add_to_processed_cache(question, entry_id)
+                
+                # Save to database every save_frequency entries
+                if len(processed_entries) % self.save_frequency == 0:
+                    batch_saved = self.save_batch_to_database(processed_entries[-self.save_frequency:])
+                    saved_count += batch_saved
+                
+                # Update progress bar
+                progress_bar.update(1)
+                progress_bar.set_postfix({
+                    'processed': len(processed_entries),
+                    'saved': saved_count,
+                    'skipped': skipped_count
+                })
                     
             except Exception as e:
                 print(f"Error processing entry {idx}: {e}")
+                progress_bar.update(1)
                 continue
         
-        return processed_entries, skipped_count
+        # Save any remaining entries
+        remaining_entries = len(processed_entries) % self.save_frequency
+        if remaining_entries > 0:
+            batch_saved = self.save_batch_to_database(processed_entries[-remaining_entries:])
+            saved_count += batch_saved
+        
+        progress_bar.close()
+        
+        return processed_entries, skipped_count, saved_count
+    
+    def save_batch_to_database(self, processed_entries: List[Dict]) -> int:
+        """
+        Save a batch of processed entries to the database.
+        
+        Args:
+            processed_entries: List of processed entry dictionaries
+            
+        Returns:
+            Number of entries successfully saved
+        """
+        saved_count = 0
+        
+        for entry in processed_entries:
+            try:
+                self.db.add_entry(
+                    question=entry['question'],
+                    answer=entry['answer'],
+                    category=entry['category']
+                )
+                saved_count += 1
+                    
+            except Exception as e:
+                print(f"Error saving entry: {e}")
+                continue
+        
+        return saved_count
     
     def save_to_database(self, processed_entries: List[Dict]) -> int:
         """
@@ -509,8 +612,21 @@ class NaturalQuestionsProcessor:
         entries_processed_count = 0
         
         print(f"Processing large dataset in chunks of {self.chunk_size}...")
+        print(f"Saving to database every {self.save_frequency} entries...")
         if skip_duplicates:
             print("Duplicate checking enabled")
+        
+        # Get total number of lines for progress bar (approximate)
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                total_lines = sum(1 for _ in f)
+            print(f"Estimated total entries: {total_lines}")
+        except:
+            total_lines = None
+            print("Could not estimate total entries")
+        
+        # Create overall progress bar
+        overall_progress = tqdm(total=limit or total_lines, desc="Overall progress", unit="entry")
         
         try:
             for chunk_idx, chunk in enumerate(self.load_jsonl_chunks(file_path)):
@@ -526,16 +642,21 @@ class NaturalQuestionsProcessor:
                 print(f"\nProcessing chunk {chunk_idx + 1} ({len(chunk)} entries)...")
                 
                 # Process chunk
-                processed_entries, skipped_count = self.process_chunk(chunk, skip_duplicates)
-                
-                # Save chunk to database
-                saved_count = self.save_chunk_to_database(processed_entries)
+                processed_entries, skipped_count, saved_count = self.process_chunk(chunk, skip_duplicates)
                 
                 # Update totals
                 total_processed += len(processed_entries)
                 total_saved += saved_count
                 total_skipped += skipped_count
                 entries_processed_count += len(chunk)
+                
+                # Update overall progress bar
+                overall_progress.update(len(chunk))
+                overall_progress.set_postfix({
+                    'processed': total_processed,
+                    'saved': total_saved,
+                    'skipped': total_skipped
+                })
                 
                 print(f"Chunk {chunk_idx + 1} complete: {len(processed_entries)} processed, "
                       f"{saved_count} saved, {skipped_count} skipped")
@@ -544,8 +665,12 @@ class NaturalQuestionsProcessor:
                 
         except KeyboardInterrupt:
             print(f"\nProcessing interrupted by user")
+            print(f"Data saved up to this point: {total_saved} entries")
         except Exception as e:
             print(f"Error during processing: {e}")
+            print(f"Data saved up to this point: {total_saved} entries")
+        finally:
+            overall_progress.close()
         
         return total_processed, total_saved, total_skipped
     
