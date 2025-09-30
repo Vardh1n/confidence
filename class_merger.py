@@ -3,14 +3,14 @@ from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 import numpy as np
 
-def cluster_classes_and_update_db(db_path: str, class_column: str = "classes"):
+def cluster_category_and_update_db(db_path: str, class_column: str = "category"):
     """
     Clusters class names into 2, 4, and 8 clusters and adds new columns to the DB.
     Args:
         db_path: Path to the SQLite database.
         class_column: Name of the original class column.
     """
-    # Step 1: Fetch all unique classes
+    # Step 1: Fetch all unique category
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(f"SELECT DISTINCT {class_column} FROM qa_entries")
@@ -54,4 +54,4 @@ def cluster_classes_and_update_db(db_path: str, class_column: str = "classes"):
 
 if __name__ == "__main__":
     # Example usage:
-    cluster_classes_and_update_db("qa_database.db", class_column="classes")
+    cluster_category_and_update_db("qa_database.db", class_column="category")
