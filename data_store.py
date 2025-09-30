@@ -33,9 +33,7 @@ class QADataStore:
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         question TEXT NOT NULL,
                         answer TEXT NOT NULL,
-                        category TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        category TEXT NOT NULL
                     )
                 ''')
             else:
