@@ -113,7 +113,7 @@ class QADataStore:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM qa_entries WHERE category = ? ORDER BY created_at DESC', (category,))
+            cursor.execute('SELECT * FROM qa_entries WHERE category = ? ORDER BY id DESC', (category,))
             
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
@@ -134,7 +134,7 @@ class QADataStore:
             cursor.execute('''
                 SELECT * FROM qa_entries 
                 WHERE question LIKE ? OR answer LIKE ?
-                ORDER BY created_at DESC
+                ORDER BY id DESC
             ''', (f'%{search_term}%', f'%{search_term}%'))
             
             rows = cursor.fetchall()
@@ -154,7 +154,7 @@ class QADataStore:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             
-            query = 'SELECT * FROM qa_entries ORDER BY created_at DESC'
+            query = 'SELECT * FROM qa_entries ORDER BY id DESC'
             if limit:
                 query += f' LIMIT {limit}'
             
@@ -211,7 +211,6 @@ class QADataStore:
             if not updates:
                 return False
             
-            updates.append('updated_at = CURRENT_TIMESTAMP')
             params.append(entry_id)
             
             query = f'UPDATE qa_entries SET {", ".join(updates)} WHERE id = ?'
