@@ -18,19 +18,45 @@ class QADataStore:
         """Initialize the database and create the table if it doesn't exist."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS qa_entries (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    question TEXT NOT NULL,
-                    answer TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
             
-            # Create indexes for better query performance
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_category ON qa_entries(category)')
+            # Check if table exists
+            cursor.execute('''
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='qa_entries'
+            ''')
+            table_exists = cursor.fetchone() is not None
+            
+            if not table_exists:
+                # Create new table with all columns
+                cursor.execute('''
+                    CREATE TABLE qa_entries (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        question TEXT NOT NULL,
+                        answer TEXT NOT NULL,
+                        category TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+            else:
+                # Check if category column exists in existing table
+                cursor.execute("PRAGMA table_info(qa_entries)")
+                columns = [column[1] for column in cursor.fetchall()]
+                
+                if 'category' not in columns:
+                    # Add category column if it doesn't exist
+                    cursor.execute('''
+                        ALTER TABLE qa_entries 
+                        ADD COLUMN category TEXT DEFAULT ''
+                    ''')
+        
+            # Create indexes (only create category index if column exists)
+            cursor.execute("PRAGMA table_info(qa_entries)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'category' in columns:
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_category ON qa_entries(category)')
+            
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_question ON qa_entries(question)')
             
             conn.commit()
@@ -284,7 +310,34 @@ class QADataStore:
             
             conn.commit()
             print("Successfully removed unused columns. Only id, question, and answer remain.")
-        
+    
+    def add_category_column(self):
+        """
+        Add a new 'category' column to the qa_entries table and initialize it as empty.
+        This will alter the existing table structure to include the category column.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            try:
+                # Add the category column with empty string as default
+                cursor.execute('''
+                    ALTER TABLE qa_entries 
+                    ADD COLUMN category TEXT DEFAULT ''
+                ''')
+                
+                # Create index for better query performance on the new column
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_category ON qa_entries(category)')
+                
+                conn.commit()
+                print("Successfully added 'category' column to qa_entries table.")
+                
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" in str(e).lower():
+                    print("Category column already exists in the table.")
+                else:
+                    print(f"Error adding category column: {e}")
+
     def close(self):
         """Close the database connection (for explicit cleanup if needed)."""
         # SQLite connections are closed automatically with context managers
@@ -308,7 +361,7 @@ if __name__ == "__main__":
     for question, answer, category in sample_entries:
         entry_id = db.add_entry(question, answer, category)
         print(f"Added entry {entry_id}: {question[:30]}...")
-    """
+    
 
     # Display some statistics
     print(f"\nTotal entries: {len(db.get_all_entries())}")
@@ -325,6 +378,6 @@ if __name__ == "__main__":
         print(f"  Q: {result['question']}")
         print(f"  A: {result['answer'][:50]}...")
         print(f"  Category: {result['category']}\n")
-
-    db.remove_unused_columns()
-    db.close()
+    """
+    #db.remove_unused_columns()
+    #db.add_category_column()
