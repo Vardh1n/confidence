@@ -249,7 +249,42 @@ class QADataStore:
         for entry in entries:
             if all(key in entry for key in ['question', 'answer', 'category']):
                 self.add_entry(entry['question'], entry['answer'], entry['category'])
-    
+
+    def remove_unused_columns(self):
+        """
+        Remove all columns except id, question, and answer from the qa_entries table.
+        This will create a new table with only the essential columns and migrate the data.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Create a new table with only the required columns
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS qa_entries_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    question TEXT NOT NULL,
+                    answer TEXT NOT NULL
+                )
+            ''')
+            
+            # Copy data from old table to new table
+            cursor.execute('''
+                INSERT INTO qa_entries_new (id, question, answer)
+                SELECT id, question, answer FROM qa_entries
+            ''')
+            
+            # Drop the old table
+            cursor.execute('DROP TABLE qa_entries')
+            
+            # Rename the new table to the original name
+            cursor.execute('ALTER TABLE qa_entries_new RENAME TO qa_entries')
+            
+            # Recreate the index for question
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_question ON qa_entries(question)')
+            
+            conn.commit()
+            print("Successfully removed unused columns. Only id, question, and answer remain.")
+        
     def close(self):
         """Close the database connection (for explicit cleanup if needed)."""
         # SQLite connections are closed automatically with context managers
@@ -261,7 +296,7 @@ if __name__ == "__main__":
     db = QADataStore("qa_database.db")
     
     # Add some sample entries
-    sample_entries = [
+    """    sample_entries = [
         ("What is Python?", "Python is a high-level programming language known for its simplicity and readability.", "programming"),
         ("How do you create a list in Python?", "You can create a list using square brackets: my_list = [1, 2, 3]", "programming"),
         ("What is machine learning?", "Machine learning is a subset of AI that enables computers to learn without being explicitly programmed.", "ai"),
@@ -273,7 +308,8 @@ if __name__ == "__main__":
     for question, answer, category in sample_entries:
         entry_id = db.add_entry(question, answer, category)
         print(f"Added entry {entry_id}: {question[:30]}...")
-    
+    """
+
     # Display some statistics
     print(f"\nTotal entries: {len(db.get_all_entries())}")
     print(f"Categories: {db.get_all_categories()}")
@@ -289,3 +325,6 @@ if __name__ == "__main__":
         print(f"  Q: {result['question']}")
         print(f"  A: {result['answer'][:50]}...")
         print(f"  Category: {result['category']}\n")
+
+    db.remove_unused_columns()
+    db.close()
