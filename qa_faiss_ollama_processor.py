@@ -457,14 +457,15 @@ Please provide a comprehensive answer based on the context above."""
                      ollama_generated_answer, total_chunks_used, processing_status)
                     VALUES (?, ?, ?, 
                             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
-                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success')
+                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     result['id'],
                     entry['question'],
                     entry['answer'],
                     *article_data,
                     result['generated_answer'],
-                    result['total_chunks_used']
+                    result['total_chunks_used'],
+                    'success'
                 ))
             
             conn.commit()
