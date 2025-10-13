@@ -59,6 +59,7 @@ class QAFAISSOllamaProcessor:
     def init_output_database(self):
         """Initialize output database with chunk count columns and generated answer."""
         with sqlite3.connect(self.output_db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")  # Better concurrency
             cursor = conn.cursor()
             
             # Create main results table
@@ -424,9 +425,9 @@ Please provide a comprehensive answer based on the context above."""
             if result['status'] == 'error':
                 cursor.execute('''
                     INSERT OR REPLACE INTO qa_faiss_results 
-                    (id, question, processing_status, error_message)
-                    VALUES (?, ?, 'error', ?)
-                ''', (result['id'], '', result['error']))
+                    (id, question, answer, processing_status, error_message)
+                    VALUES (?, ?, ?, 'error', ?)
+                ''', (result['id'], '', '', result['error']))
             else:
                 entry = result['entry']
                 chunk_counts = result['chunk_counts']
@@ -454,8 +455,9 @@ Please provide a comprehensive answer based on the context above."""
                      article_7_link, article_7_title, article_7_snippet, article_7_no_of_chunks,
                      article_8_link, article_8_title, article_8_snippet, article_8_no_of_chunks,
                      ollama_generated_answer, total_chunks_used, processing_status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
-                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success')
+                    VALUES (?, ?, ?, 
+                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
+                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'success')
                 ''', (
                     result['id'],
                     entry['question'],
@@ -574,7 +576,7 @@ if __name__ == "__main__":
     processor = QAFAISSOllamaProcessor(
         input_db_path="qa_ddg_articles.db",
         output_db_path="qa_faiss_ollama_results.db",
-        model_name="llama3.2",
+        model_name="gemma3n:latest",
         embedding_model="all-MiniLM-L6-v2"
     )
 
